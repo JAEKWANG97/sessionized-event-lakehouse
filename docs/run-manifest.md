@@ -49,6 +49,11 @@ RUNNING -> FAILED
 8. SUCCESS manifest 작성
 ```
 
+위 순서의 `_versions/{run_id}` publish와 Hive partition location 전환은
+Hive sync를 사용하는 실행 경로에 적용된다. Hive sync를 끈 로컬 샘플 실행은
+Hive metadata를 변경하지 않고 파일시스템의 `dt` partition을 교체하는 방식으로
+동작한다.
+
 catch 가능한 예외가 발생하면 `FAILED` manifest로 갱신한다.
 
 프로세스가 `kill -9`, OOM, 서버 장애처럼 강제로 종료되면 `FAILED` manifest를 쓸 기회가 없을 수 있다.
@@ -213,6 +218,8 @@ manifest 없음
 `_staging`은 write/검증 전용 임시 경로이고, `_versions`는 검증이 끝난 배치 결과를 보관하는 경로다.
 Hive external table의 각 `dt` partition은 `{output}/dt=...`를 직접 읽는 것이 아니라
 `_versions/{run_id}/dt=...` location을 바라본다.
+`MSCK REPAIR TABLE`은 table root 아래의 `dt=...` partition을 자동 발견하는 방식에
+가깝지만, 이 구조에서는 재처리 안정성을 위해 partition별 `LOCATION`을 명시적으로 관리한다.
 
 이 구조에서는 기존 partition 데이터를 먼저 삭제하지 않는다. 따라서 publish 중 실패하더라도
 기존 데이터 파일이 사라져 partition이 비는 문제를 줄일 수 있다. 다만 여러 `dt` partition의

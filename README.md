@@ -102,6 +102,9 @@ partition 목록을 확인합니다. Hive sync를 사용하는 경우 검증된 
 `dt` partition의 Hive location만 새 versioned path로 전환합니다. 따라서
 새 기간의 partition은 추가되고, 같은 기간을 재처리하면 해당 `dt` partition이
 새 버전 데이터를 바라보며 다른 partition은 유지됩니다.
+이 versioned partition location 전환은 Hive sync를 사용하는 실행 경로에
+적용됩니다. Hive sync를 끈 로컬 샘플 실행은 Hive metadata를 변경하지 않고
+파일시스템의 `dt` partition을 교체하는 방식으로 동작합니다.
 
 기간 경계에서 이어지는 세션은 `--lookback-input`으로 이전 기간 데이터를
 함께 읽어 계산할 수 있습니다. 세션화는 `input + lookback-input` 전체에서
@@ -284,6 +287,8 @@ Hive external table을 사용할 때 주의한 점은 다음과 같습니다.
   검증된 `_versions/{run_id}/dt=...` 경로로 설정합니다.
 - 새 `dt` partition은 `ALTER TABLE ADD IF NOT EXISTS PARTITION ... LOCATION`으로 추가하고,
   기존 `dt` partition 재처리는 `ALTER TABLE ... PARTITION ... SET LOCATION`으로 새 버전을 바라보게 합니다.
+- `MSCK REPAIR TABLE`은 table root 아래의 `dt=...` partition을 자동 발견하는 방식에 가깝지만,
+  이 구조에서는 재처리 안정성을 위해 partition별 `LOCATION`을 명시적으로 관리합니다.
 - `_staging`, `_versions`, `_manifests`처럼 `_`로 시작하는 보조 디렉터리는 output root 아래에 분리했습니다.
 - `dt`는 원본 UTC 날짜가 아니라 KST로 변환한 날짜이며, WAU도 이 `dt`를 기준으로 계산합니다.
 
@@ -422,7 +427,7 @@ Parquet/Snappy 저장, Hive external table, 재처리 가능한 partition locati
 | 항목 | 현재 구현 | 운영 확장 방향 |
 |---|---|---|
 | 추가 기간의 세션 경계 | `--lookback-input`으로 이전 기간 데이터를 명시적으로 함께 읽을 수 있습니다. 세션화는 `input + lookback-input` 전체에서 수행하고, publish는 `start-date <= dt < end-date` 범위만 수행합니다. | 완전한 stateful incremental 처리가 필요하면 `user_id`별 마지막 이벤트와 세션 상태를 별도 state table로 관리합니다. |
-| partition publish 중 장애 | staging write와 검증이 끝난 뒤 `_versions/{run_id}` 경로를 만들고 Hive partition location을 전환합니다. 기존 데이터를 먼저 삭제하지 않으므로 partition missing 위험은 줄였지만, 여러 `dt`를 전환하는 중 장애가 나면 일부 partition만 새 version을 바라보는 mixed 상태가 될 수 있습니다. | 여러 partition을 하나의 atomic commit으로 묶어야 한다면 Iceberg/Delta/Hudi 같은 table format을 사용합니다. |
+| partition publish 중 장애 | Hive sync 실행에서는 staging write와 검증이 끝난 뒤 `_versions/{run_id}` 경로를 만들고 Hive partition location을 전환합니다. 기존 데이터를 먼저 삭제하지 않으므로 partition missing 위험은 줄였지만, 여러 `dt`를 전환하는 중 장애가 나면 일부 partition만 새 version을 바라보는 mixed 상태가 될 수 있습니다. Hive sync를 끈 로컬 샘플 실행은 파일시스템 partition 교체 방식으로 동작합니다. | 여러 partition을 하나의 atomic commit으로 묶어야 한다면 Iceberg/Delta/Hudi 같은 table format을 사용합니다. |
 | small file | 기본값으로 write 전에 `dt` 기준 `repartition`을 수행해 같은 날짜의 데이터가 여러 작은 파일로 과도하게 쪼개지는 문제를 줄였습니다. | 날짜별 데이터가 커지는 운영 환경에서는 target file size 기준 repartition, salt key, 또는 후속 compaction batch를 둡니다. |
 | 자동화 테스트 | `SessionizationSpec`에서 Spark local mode로 세션화 핵심 경계를 검증합니다. | LakeWriter의 versioned publish까지 자동화하려면 별도 integration test를 추가할 수 있습니다. |
 
