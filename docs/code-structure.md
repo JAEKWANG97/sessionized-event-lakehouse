@@ -11,8 +11,10 @@ src/main/scala/com/jaekwang/lakehouse/
   schema/EventSchema.scala
   transform/Sessionization.scala
   io/LakeWriter.scala
+  io/RunManifestWriter.scala
 
 src/test/scala/com/jaekwang/lakehouse/
+  config/AppConfigSpec.scala
   transform/SessionizationSpec.scala
 ```
 
@@ -86,6 +88,12 @@ Parquet + Snappy
 partitionBy("dt")
 ```
 
+### io/RunManifestWriter.scala
+
+배치 실행 상태를 manifest JSON으로 기록한다. 로그만으로는 어떤 실행이 완료됐는지,
+어떤 기간을 다시 실행해야 하는지 판단하기 어렵기 때문에 `RUNNING`, `SUCCESS`,
+`FAILED` 상태와 처리 범위, row count, partition 목록을 구조화해서 남긴다.
+
 ### transform/SessionizationSpec.scala
 
 세션화 규칙을 Spark local mode로 검증하는 자동화 테스트다.
@@ -98,7 +106,13 @@ partitionBy("dt")
 user_id가 다르면 세션 순번은 독립적으로 계산
 UTC event_time에서 KST dt partition 생성
 원본 user_session이 달라도 generated_session_id는 gap 기준으로 결정
+lookback 이벤트가 publish 범위 이전 session_start를 만들 수 있음
 ```
+
+### config/AppConfigSpec.scala
+
+실행 인자 파싱을 검증한다. 특히 `--lookback-input`이 실제 CSV read path에
+먼저 들어가는지, `--repartition-by-dt false`가 동작하는지 확인한다.
 
 ## 중요한 설계 보정
 

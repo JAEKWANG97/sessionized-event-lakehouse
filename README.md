@@ -113,6 +113,19 @@ partition 목록을 확인합니다. Hive sync를 사용하는 경우 검증된 
 `session_start_at_kst`가 publish 범위 이전 시각을 가리킬 수 있습니다.
 이는 경계 세션이 이전 기간에서 시작되었음을 나타내기 위한 의도된 동작입니다.
 
+## 주요 설계 보정
+
+초기 구현 후 재처리, 기간 확장, 장애 상황을 다시 검토하면서 몇 가지 리스크를
+발견했습니다. 최종 구현은 이 리스크를 다음과 같이 보정한 결과입니다.
+
+| 검토 중 발견한 리스크 | 보정한 내용 |
+|---|---|
+| 신규 기간만 읽으면 이전 기간 마지막 이벤트와 이어지는 세션을 알 수 없습니다. | `--lookback-input`을 추가해 이전 기간 데이터를 세션 계산 context로 함께 읽도록 변경했습니다. |
+| `session_seq`는 입력 범위에 따라 달라질 수 있습니다. | `generated_session_id`에서 `session_seq`를 제외하고 `user_id + session_start_at_utc` 기반으로 변경했습니다. |
+| final partition을 먼저 삭제하면 publish 중 장애 시 partition missing 가능성이 있습니다. | `_versions/{run_id}`에 결과를 보존하고 Hive partition `LOCATION`을 전환하는 방식으로 변경했습니다. |
+| 기본 write 결과가 작은 parquet 파일을 과도하게 생성했습니다. | `dt` 기준 repartition을 기본 적용해 전체 실행 기준 parquet 파일 수를 6100개에서 61개로 줄였습니다. |
+| 세션 경계 로직에 코드 레벨 회귀 테스트가 부족했습니다. | `SessionizationSpec`, `AppConfigSpec`를 추가해 gap, KST 경계, lookback, 인자 파싱을 검증했습니다. |
+
 ## 빌드
 
 현재 로컬 개발 환경은 Spark 4.1.2, Scala 2.13.17 기준입니다.
@@ -447,9 +460,12 @@ Spark 실행 모델에 가깝게 표현할 수 있다고 판단했습니다.
 사용한 도구:
 
 - OpenAI ChatGPT/Codex
+- Hermes Agent 기반 리뷰
 
 AI는 정답을 그대로 받는 용도보다, 요구사항을 쪼개고 제가 헷갈리는 개념을
-확인하며 구현 초안을 빠르게 검토하는 용도로 사용했습니다.
+확인하며 구현 초안을 빠르게 검토하는 용도로 사용했습니다. 구현이 어느 정도
+진행된 뒤에는 Hermes Agent 기반 리뷰를 통해 제출물의 약점, 운영 리스크,
+면접에서 받을 수 있는 질문을 비관적으로 점검했습니다.
 
 AI를 활용한 부분:
 
@@ -460,6 +476,17 @@ AI를 활용한 부분:
 - staging 경로에 먼저 쓰고 검증 후 Hive partition location을 전환하는 흐름 검토
 - README와 `docs/` 문서 초안 작성 및 표현 정리 보조
 - 실행 명령, 검증 쿼리, 남은 작업 목록 점검
+- Hermes Agent 기반 리뷰를 통한 설계 리스크 점검
+
+AI 리뷰를 통해 발견하고 보정한 부분:
+
+| 리뷰에서 드러난 리스크 | 보정한 내용 |
+|---|---|
+| 신규 기간만 읽으면 이전 기간 마지막 이벤트와 이어지는 세션을 알 수 없습니다. | `--lookback-input`을 추가해 이전 기간 데이터를 세션 계산 context로 함께 읽도록 변경했습니다. |
+| `session_seq`는 입력 범위에 따라 달라질 수 있습니다. | `generated_session_id`에서 `session_seq`를 제외하고 `user_id + session_start_at_utc` 기반으로 변경했습니다. |
+| final partition을 먼저 삭제하면 publish 중 장애 시 partition missing 가능성이 있습니다. | `_versions/{run_id}`에 결과를 보존하고 Hive partition `LOCATION`을 전환하는 방식으로 변경했습니다. |
+| 기본 write 결과가 작은 parquet 파일을 과도하게 생성했습니다. | `dt` 기준 repartition을 기본 적용해 전체 실행 기준 parquet 파일 수를 6100개에서 61개로 줄였습니다. |
+| 세션 경계 로직에 코드 레벨 회귀 테스트가 부족했습니다. | `SessionizationSpec`, `AppConfigSpec`를 추가해 5분 gap, KST 경계, lookback, 인자 파싱을 검증했습니다. |
 
 직접 판단하고 검증한 부분:
 
@@ -488,6 +515,8 @@ AI를 활용한 부분:
   질문했습니다.
 - AI가 제안한 구현은 그대로 확정하지 않고, 재처리, 중복 append, 중간 실패,
   KST 날짜 경계처럼 실패할 수 있는 상황을 다시 질문했습니다.
+- 구현 후에는 Hermes Agent 기반 비관적 리뷰를 요청해 약한 가정과 면접 질문
+  후보를 뽑고, 그중 현재 구현 범위에서 보완할 수 있는 항목만 코드와 문서에 반영했습니다.
 - README 문서는 AI가 초안을 만들되, 공개 저장소에 맞지 않는 표현과
   제가 설명하기 어려운 문장은 제거하거나 다시 작성했습니다.
 

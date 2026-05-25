@@ -30,11 +30,13 @@ libraryDependencies ++= Seq(
 
 `Provided`를 사용하는 이유는 Spark dependency를 fat jar 안에 넣지 않기 위해서다. 실제 실행 시 Spark 라이브러리는 `spark-submit`이 제공한다.
 
-## 다음 검증 순서
+## 검증 명령
 
-```text
-1. sbt compile
-2. sample_events.csv로 로컬 실행
-3. data/lake/sessionized_events 아래 Parquet partition 생성 확인
-4. 결과 row 수, session 수, dt partition 수 검증
+```bash
+sbt compile
+sbt test
+sbt package
 ```
+
+샘플과 전체 데이터 실행 결과는 `docs/sample-run-verification.md`와
+README의 전체 데이터 실행 섹션에 기록했다.

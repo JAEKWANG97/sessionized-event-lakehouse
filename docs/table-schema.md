@@ -1,6 +1,12 @@
 # Hive 테이블 스키마 설계
 
-이 프로젝트의 핵심 결과물은 Hive external table이다. Spark가 CSV 로그를 읽고, KST 기준 날짜와 새 세션 ID를 붙인 뒤, Parquet/Snappy 파일로 저장한다. Hive table은 이 파일 위치를 바라보면서 SQL로 조회할 수 있게 해준다.
+이 프로젝트의 핵심 결과물은 Hive external table이다. Spark가 CSV 로그를 읽고,
+KST 기준 날짜와 새 세션 ID를 붙인 뒤, Parquet/Snappy 파일로 저장한다.
+Hive table은 이 파일 위치를 바라보면서 SQL로 조회할 수 있게 해준다.
+
+스키마는 단순히 원본 CSV 컬럼을 그대로 옮기는 방식으로 정하지 않았다. 인터뷰나
+재처리 검증에서 “왜 이 row가 이 세션에 속하는지” 설명할 수 있도록, 원본 값과
+생성된 세션 근거를 함께 남기는 방향으로 정했다.
 
 테이블 이름은 다음으로 정한다.
 
@@ -14,7 +20,8 @@ sessionized_events
 
 원본 CSV에는 `event_time`과 `user_session`이라는 컬럼이 있다.
 
-하지만 결과 테이블에서는 이 둘을 그대로 쓰지 않고 이름을 바꾼다.
+처음에는 원본 컬럼명을 그대로 유지하는 방식도 가능해 보인다. 하지만 결과
+테이블에서는 이 둘을 그대로 쓰지 않고 이름을 바꾼다.
 
 ```text
 event_time      -> event_time_utc
@@ -71,6 +78,10 @@ user_session    -> source_user_session
 ## generated_session_id 생성 방식
 
 세션 ID는 사람이 읽기 쉬운 `user_id_sessionSeq` 형태가 아니라 SHA-256 해시값으로 만든다.
+초기에는 `session_seq`를 ID 재료로 넣는 방식도 검토했지만, lookback input을
+사용하면 입력 범위에 따라 같은 실제 세션의 `session_seq`가 달라질 수 있다.
+그래서 downstream 식별자인 `generated_session_id`는 처리 범위 변화에 덜
+민감한 값으로 만들었다.
 
 개념식은 다음과 같다.
 
