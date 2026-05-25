@@ -1,6 +1,7 @@
 # 샘플 실행 검증
 
-로컬 환경에서 `sample/sample_events.csv`를 대상으로 Spark 애플리케이션을 실행했다.
+전체 Kaggle 데이터를 바로 실행하면 디버깅이 어렵습니다. 그래서 먼저 작은 샘플 CSV로 세션화 규칙과
+KST `dt` partition 생성이 의도대로 동작하는지 확인했습니다.
 
 ## 실행 환경
 
@@ -41,7 +42,8 @@ spark-submit \
   --enable-hive-sync false
 ```
 
-처음 검증에서는 Hive sync를 끄고 Parquet/Snappy output 생성부터 확인했다.
+처음 검증에서는 Hive sync를 끄고 Parquet/Snappy output 생성부터 확인했습니다. 이 모드는 Hive metadata를
+갱신하지 않고 파일시스템의 `dt` partition을 교체하는 로컬 확인용 실행입니다.
 
 ## 결과 파일
 
@@ -90,4 +92,4 @@ sessions   = 6
 partitions = 2
 ```
 
-샘플 데이터 설계 당시 기대했던 값과 일치한다.
+샘플 데이터에 의도적으로 넣어둔 5분 경계, user별 독립 세션, KST 날짜 변환 결과와 일치했습니다.
