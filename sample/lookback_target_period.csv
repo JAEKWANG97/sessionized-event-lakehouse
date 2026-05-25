@@ -1,0 +1,2 @@
+event_time,event_type,product_id,category_id,category_code,brand,price,user_id,user_session
+2019-10-31 15:01:00 UTC,cart,8002,9001,electronics.smartphone,apple,100.00,800,source-lookback-b

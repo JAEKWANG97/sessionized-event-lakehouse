@@ -68,8 +68,7 @@ object Sessionization {
       concat_ws(
         "|",
         col("user_id").cast("string"),
-        date_format(col("session_start_at_utc"), "yyyy-MM-dd HH:mm:ss"),
-        col("session_seq").cast("string")
+        date_format(col("session_start_at_utc"), "yyyy-MM-dd HH:mm:ss")
       ),
       256
     )

@@ -16,7 +16,7 @@
 ```bash
 spark-submit \
   --class com.jaekwang.lakehouse.SessionizedEventLakehouseApp \
-  target/scala-2.12/sessionized-event-lakehouse-assembly.jar \
+  target/scala-2.13/sessionized-event-lakehouse_2.13-0.1.0.jar \
   --input 'data/raw/extracted/2019-*.csv' \
   --output data/lake/sessionized_events \
   --database default \
@@ -31,7 +31,7 @@ spark-submit \
 ```bash
 spark-submit \
   --class com.jaekwang.lakehouse.SessionizedEventLakehouseApp \
-  target/scala-2.12/sessionized-event-lakehouse-assembly.jar \
+  target/scala-2.13/sessionized-event-lakehouse_2.13-0.1.0.jar \
   --input 'data/raw/extracted/2019-Dec.csv' \
   --output data/lake/sessionized_events \
   --database default \
@@ -48,12 +48,14 @@ spark-submit \
 | 인자 | 필수 여부 | 예시 | 설명 |
 |---|---:|---|---|
 | `--input` | 필수 | `sample/sample_events.csv` | 입력 CSV 경로 또는 glob 패턴 |
-| `--output` | 필수 | `data/lake/sessionized_events` | Parquet/Snappy 결과가 저장될 최종 경로 |
+| `--lookback-input` | 선택 | `sample/lookback_previous_period.csv` | 세션 경계 판단을 위해 함께 읽을 이전 기간 CSV 경로 또는 glob 패턴 |
+| `--output` | 필수 | `data/lake/sessionized_events` | Parquet/Snappy 결과와 manifest가 저장될 lake root 경로 |
 | `--start-date` | 필수 | `2019-10-01` | 처리할 KST partition 시작일. 포함한다. |
 | `--end-date` | 필수 | `2019-12-01` | 처리할 KST partition 종료일. 포함하지 않는다. |
 | `--run-id` | 필수 | `sample-001` | 배치 실행 ID |
 | `--database` | 선택 | `default` | Hive database 이름. 기본값은 `default` |
 | `--table` | 선택 | `sessionized_events` | Hive external table 이름. 기본값은 `sessionized_events` |
+| `--repartition-by-dt` | 선택 | `true` | write 전에 `dt` 기준 repartition을 수행할지 여부. 기본값은 `true` |
 
 ## 날짜 범위는 KST partition 기준이다
 
@@ -123,40 +125,64 @@ run_id = full-201910-201911-001
 
 ## 이 프로젝트의 선택
 
-1차 구현에서는 정확성과 단순성을 우선한다.
+구현에서는 정확성과 단순성을 우선한다.
 
 ```text
-처리 대상 기간 전체를 읽고 세션을 재계산한다.
-같은 기간을 재처리하면 해당 dt partition을 overwrite한다.
+input과 lookback-input을 함께 읽고 세션을 계산한다.
+마지막 write 직전에 start-date <= dt < end-date 범위만 남긴다.
+같은 기간을 재처리하면 해당 dt partition을 새 version으로 전환한다.
 ```
 
-이 방식은 현재 데이터 규모에서는 충분히 현실적이고, 결과도 이해하기 쉽다.
+`--lookback-input`은 완전한 stateful incremental 처리가 아니라 명시적인
+context input이다. 정확성을 위해서는 경계 세션이 포함될 만큼 충분한 이전
+데이터를 `--lookback-input`으로 제공해야 한다.
+
+예를 들어 11월만 publish하되 10월 말 이벤트와 이어지는 세션을 판단하려면
+다음처럼 실행할 수 있다.
+
+```bash
+spark-submit \
+  --class com.jaekwang.lakehouse.SessionizedEventLakehouseApp \
+  target/scala-2.13/sessionized-event-lakehouse_2.13-0.1.0.jar \
+  --input data/raw/2019-Nov.csv \
+  --lookback-input data/raw/2019-Oct.csv \
+  --output data/lake/sessionized_events \
+  --start-date 2019-11-01 \
+  --end-date 2019-12-01 \
+  --run-id full-201911-001
+```
+
+이때 11월 partition에 저장되는 row라도 `session_start_at_utc`와
+`session_start_at_kst`가 10월 말 시각을 가리킬 수 있다. 이는 경계 세션이
+이전 기간에서 시작되었음을 나타내기 위한 의도된 동작이다.
 
 운영 환경으로 확장한다면 다음 방식을 고려할 수 있다.
 
 ```text
-1. lookback window
-   - 새 기간을 처리할 때 직전 몇 분 또는 몇 시간의 데이터를 함께 읽는다.
-
-2. user session state table
+1. user session state table
    - user_id별 마지막 이벤트 시간과 마지막 세션 번호를 별도 테이블에 저장한다.
+
+2. table format 기반 commit
+   - 여러 partition의 publish를 하나의 commit처럼 관리한다.
 ```
 
-하지만 이 두 방식은 구현 복잡도가 올라가므로, 현재 구현에서는 문서화된 확장안으로 남긴다.
+하지만 이 방식은 구현 복잡도가 올라가므로, 현재 구현에서는 명시적인 lookback
+입력 방식으로 경계 세션을 방어한다.
 
 ## 샘플 실행
 
 ```bash
 spark-submit \
   --class com.jaekwang.lakehouse.SessionizedEventLakehouseApp \
-  target/scala-2.12/sessionized-event-lakehouse-assembly.jar \
+  target/scala-2.13/sessionized-event-lakehouse_2.13-0.1.0.jar \
   --input sample/sample_events.csv \
   --output data/lake/sessionized_events \
   --database default \
   --table sessionized_events \
   --start-date 2019-10-01 \
   --end-date 2019-10-03 \
-  --run-id sample-001
+  --run-id sample-001 \
+  --repartition-by-dt true
 ```
 
 예상 output partition:
@@ -172,8 +198,8 @@ data/lake/sessionized_events/dt=2019-10-02/
 
 | 요구사항 | 설계 반영 |
 |---|---|
-| 추가 기간 처리 대응 | `--input`, `--start-date`, `--end-date` |
+| 추가 기간 처리 대응 | `--input`, `--lookback-input`, `--start-date`, `--end-date` |
 | KST 기준 daily partition | 날짜 필터를 KST `dt` 기준으로 적용 |
-| 재처리 가능 | 같은 기간 재실행 시 partition overwrite |
-| 배치 장애 복구 | `run_id`, run manifest, 임시 저장 경로 기반 최종 partition 반영 |
+| 재처리 가능 | 같은 기간 재실행 시 partition location을 새 version으로 전환 |
+| 배치 장애 복구 | `run_id`, run manifest, 임시 저장 경로, versioned partition location 전환 |
 | Hive external table | `--output`, `--database`, `--table`로 위치와 테이블명 분리 |

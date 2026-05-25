@@ -2,13 +2,14 @@
 
 ## 목적
 
-`External Table 방식으로 설계 하고, 추가 기간 처리에 대응가능하도록 구현` 요구사항을
+External Table 방식과 추가 기간 처리를
 샘플 데이터로 검증한다.
 
 검증 포인트는 다음 두 가지다.
 
 1. 새로운 기간을 추가 처리할 때 기존 `dt` partition이 유지되는가
 2. 이미 존재하는 기간을 다시 처리할 때 중복 append가 아니라 대상 partition만 교체되는가
+3. 기간 경계에서 이어지는 세션을 `--lookback-input`으로 끊기지 않게 계산할 수 있는가
 
 ## 전제
 
@@ -18,14 +19,16 @@
 애플리케이션은 결과를 최종 경로가 아닌 임시 저장 경로에 먼저 쓴 뒤,
 임시 저장 경로의 Parquet를 다시 읽어 row count와 partition 목록을 확인한다.
 
-검증이 끝나면 이번 실행 결과에 포함된 `dt` partition만 최종 경로로 이동한다.
+검증이 끝나면 결과를 `_versions/{run_id}` 경로로 이동하고,
+이번 실행 결과에 포함된 `dt` partition의 Hive location을 새 versioned path로 전환한다.
 이 방식의 의도는 전체 output root를 매번 삭제하는 것이 아니라, 이번 실행 결과에
-포함된 `dt` partition만 추가 또는 교체하는 것이다.
+포함된 `dt` partition만 추가 또는 전환하는 것이다.
 
 ```text
 {output}/_staging/{run_id}/dt=yyyy-MM-dd
 -> 검증
--> {output}/dt=yyyy-MM-dd
+-> {output}/_versions/{run_id}/dt=yyyy-MM-dd
+-> ALTER TABLE ... PARTITION (dt='yyyy-MM-dd') SET LOCATION ...
 ```
 
 ## 검증 데이터
@@ -36,6 +39,8 @@
 sample/sample_events.csv
 sample/additional_period_2019_10_03.csv
 sample/reprocess_2019_10_02.csv
+sample/lookback_previous_period.csv
+sample/lookback_target_period.csv
 ```
 
 검증용 output/table:
@@ -146,6 +151,50 @@ ORDER BY dt;
 
 `2019-10-02` partition은 기존 3건에 새 2건이 append되어 5건이 된 것이 아니라, 재처리 결과 2건으로 교체되었다.
 
+## 4차 실행: lookback input으로 기간 경계 세션 검증
+
+이 검증은 publish 대상 기간의 row가 이전 기간 이벤트와 같은 세션으로 이어질 수
+있는지를 확인한다.
+
+```bash
+spark-submit \
+  --master 'local[2]' \
+  --driver-memory 2g \
+  --class com.jaekwang.lakehouse.SessionizedEventLakehouseApp \
+  target/scala-2.13/sessionized-event-lakehouse_2.13-0.1.0.jar \
+  --input sample/lookback_target_period.csv \
+  --lookback-input sample/lookback_previous_period.csv \
+  --output data/lake/lookback_boundary_test \
+  --start-date 2019-11-01 \
+  --end-date 2019-11-02 \
+  --run-id lookback-boundary-001 \
+  --enable-hive-sync false
+```
+
+검증 쿼리:
+
+```sql
+SELECT
+  product_id,
+  user_id,
+  session_seq,
+  session_event_seq,
+  date_format(session_start_at_kst, 'yyyy-MM-dd HH:mm:ss') AS session_start_at_kst,
+  run_id
+FROM parquet.`data/lake/lookback_boundary_test/dt=2019-11-01`;
+```
+
+결과:
+
+| product_id | user_id | session_seq | session_event_seq | session_start_at_kst | run_id |
+|---:|---:|---:|---:|---|---|
+| 8002 | 800 | 1 | 2 | 2019-10-31 23:58:00 | `lookback-boundary-001` |
+
+publish된 row는 `dt=2019-11-01`의 1건뿐이다. 하지만 `session_event_seq=2`이고
+`session_start_at_kst`가 publish 범위 이전인 `2019-10-31 23:58:00`을 가리킨다.
+즉 lookback input의 이전 이벤트를 세션 계산에 사용했고, 최종 publish는 요청한
+KST `dt` 범위만 수행했다.
+
 ## Hive partition 확인
 
 ```sql
@@ -160,13 +209,13 @@ dt=2019-10-02
 dt=2019-10-03
 ```
 
-파일 시스템에서도 동일한 partition 경로가 확인된다.
+파일 시스템에서는 versioned partition 경로가 확인된다.
 
 ```text
 data/lake/period_extension_test
-data/lake/period_extension_test/dt=2019-10-01
-data/lake/period_extension_test/dt=2019-10-02
-data/lake/period_extension_test/dt=2019-10-03
+data/lake/period_extension_test/_versions/period-test-initial/dt=2019-10-01
+data/lake/period_extension_test/_versions/period-test-reprocess-20191002/dt=2019-10-02
+data/lake/period_extension_test/_versions/period-test-add-20191003/dt=2019-10-03
 ```
 
 ## 결론
@@ -174,5 +223,6 @@ data/lake/period_extension_test/dt=2019-10-03
 샘플 검증 결과, 현재 구현은 추가 기간 처리와 동일 기간 재처리 모두에서 의도한 방식으로 동작했다.
 
 - 추가 기간 처리: 기존 partition 유지 + 새 partition 추가
-- 동일 기간 재처리: 대상 partition만 교체, 중복 append 없음
-- Hive external table: `MSCK REPAIR TABLE` 이후 새 partition 조회 가능
+- 동일 기간 재처리: 대상 partition location만 새 version으로 전환, 중복 append 없음
+- 기간 경계 세션: `--lookback-input`으로 이전 기간 이벤트를 함께 읽어 세션 단절 방지
+- Hive external table: `ALTER TABLE ADD/SET PARTITION LOCATION` 이후 새 partition 조회 가능

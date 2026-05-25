@@ -75,7 +75,7 @@ user_session    -> source_user_session
 개념식은 다음과 같다.
 
 ```text
-generated_session_id = sha2(concat_ws('|', user_id, session_start_at_utc, session_seq), 256)
+generated_session_id = sha2(concat_ws('|', user_id, session_start_at_utc), 256)
 ```
 
 이 방식을 선택한 이유는 다음과 같다.
@@ -84,9 +84,18 @@ generated_session_id = sha2(concat_ws('|', user_id, session_start_at_utc, sessio
 1. 같은 데이터를 재처리해도 같은 session_id가 나온다.
 2. downstream query에서 안정적으로 사용할 수 있다.
 3. user_id와 session_seq를 그대로 붙인 값을 대표 ID로 노출하지 않아도 된다.
-4. 세션 시작 시각을 함께 사용해 기간을 나눠 처리할 때 session_seq가 반복되어 생길 수 있는 충돌 가능성을 줄인다.
+4. lookback input을 도입해도 session_seq 변화에 ID가 흔들리지 않는다.
 5. 디버깅은 session_seq와 session_start_at_utc 컬럼으로 할 수 있다.
 ```
+
+`session_seq`는 user별 세션 순서를 사람이 확인하기 위한 컬럼이다. 입력 범위를
+넓히면 같은 실제 세션의 앞쪽 history가 추가되어 `session_seq`가 달라질 수
+있으므로, `generated_session_id`의 재료로 사용하지 않는다.
+
+`--lookback-input`을 사용하면 publish 대상 `dt`의 row라도
+`session_start_at_utc`와 `session_start_at_kst`가 publish 범위 이전 시각을
+가리킬 수 있다. 이는 해당 세션이 이전 기간에서 시작되었음을 나타내는 의도된
+동작이다.
 
 ## 세션 경계 조건
 

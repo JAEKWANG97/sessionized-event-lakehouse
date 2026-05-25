@@ -25,8 +25,7 @@ Manifest는 output root 아래 `_manifests` 디렉터리에 저장한다.
 data/lake/sessionized_events/_manifests/full-201910-201911-001.json
 ```
 
-`_manifests`는 `_`로 시작하므로 Hive partition repair 대상에서 제외된다.
-샘플 검증에서도 `MSCK REPAIR TABLE` 실행 시 `_manifests` 디렉터리가 partition으로 등록되지 않는 것을 확인했다.
+`_manifests`는 `_`로 시작하므로 실제 데이터 partition과 구분된다.
 
 ## 상태 전이
 
@@ -45,8 +44,8 @@ RUNNING -> FAILED
 3. CSV read / KST partition / sessionization
 4. 최종 경로가 아닌 임시 저장 경로에 Parquet/Snappy write
 5. 임시 저장 결과를 다시 읽어 row_count, partition 목록 검증
-6. 검증된 partition만 최종 경로로 이동
-7. Hive external table sync
+6. 검증된 결과를 `_versions/{run_id}` 경로로 이동
+7. Hive partition location을 `_versions/{run_id}/dt=...` 경로로 전환
 8. SUCCESS manifest 작성
 ```
 
@@ -63,6 +62,8 @@ catch 가능한 예외가 발생하면 `FAILED` manifest로 갱신한다.
 | `run_id` | 배치 실행 식별자 |
 | `status` | `RUNNING`, `SUCCESS`, `FAILED` |
 | `input` | 입력 경로 |
+| `lookback_input` | 세션 경계 판단을 위해 함께 읽은 이전 기간 입력 경로. 없으면 `null` |
+| `input_paths` | 실제 Spark CSV reader에 전달한 전체 입력 경로 목록 |
 | `output` | 출력 경로 |
 | `database` | Hive database |
 | `table` | Hive table |
@@ -70,6 +71,7 @@ catch 가능한 예외가 발생하면 `FAILED` manifest로 갱신한다.
 | `end_date` | 처리 종료일, exclusive |
 | `timezone` | partition 기준 timezone |
 | `session_gap_minutes` | 세션 분리 기준 |
+| `repartition_by_dt` | write 전에 `dt` 기준 repartition을 수행했는지 여부 |
 | `row_count` | 성공 시 처리 결과 row 수 |
 | `partitions` | 성공 시 생성 또는 교체된 `dt` partition 목록 |
 | `started_at` | 실행 시작 시각 |
@@ -104,6 +106,8 @@ spark-submit \
   "run_id": "manifest-test-success-001",
   "status": "SUCCESS",
   "input": "sample/sample_events.csv",
+  "lookback_input": null,
+  "input_paths": ["sample/sample_events.csv"],
   "output": "data/lake/manifest_test",
   "database": "default",
   "table": "sessionized_events_manifest_test",
@@ -111,6 +115,7 @@ spark-submit \
   "end_date": "2019-10-03",
   "timezone": "Asia/Seoul",
   "session_gap_minutes": 5,
+  "repartition_by_dt": true,
   "row_count": 9,
   "partitions": ["2019-10-01", "2019-10-02"],
   "started_at": "2026-05-25T09:09:59.796165Z",
@@ -147,6 +152,8 @@ spark-submit \
   "run_id": "manifest-test-failed-001",
   "status": "FAILED",
   "input": "sample/missing_manifest_input.csv",
+  "lookback_input": null,
+  "input_paths": ["sample/missing_manifest_input.csv"],
   "output": "data/lake/manifest_failed_test",
   "database": "default",
   "table": "sessionized_events_manifest_failed_test",
@@ -154,6 +161,7 @@ spark-submit \
   "end_date": "2019-10-03",
   "timezone": "Asia/Seoul",
   "session_gap_minutes": 5,
+  "repartition_by_dt": true,
   "row_count": null,
   "partitions": [],
   "started_at": "2026-05-25T09:10:28.388218Z",
@@ -180,9 +188,9 @@ manifest 없음
 ```
 
 실패 또는 incomplete run은 같은 `start-date`, `end-date`, `input`, `output` 조건으로 다시 실행한다.
-동일 `dt` partition은 검증된 결과로 교체되므로 중복 append를 피할 수 있다.
+재실행할 때는 새 `run_id`를 사용하는 것이 안전하다. 동일 `dt` partition은 새 versioned path를 바라보게 되므로 중복 append를 피할 수 있다.
 
-## 임시 저장 경로 기반 반영
+## Versioned partition publish
 
 현재 구현은 중간 실패 결과가 최종 테이블에 노출되는 것을 줄이기 위해
 최종 경로가 아닌 임시 저장 경로에 먼저 결과를 만든다.
@@ -190,17 +198,23 @@ manifest 없음
 ```text
 최종 경로가 아닌 임시 저장 경로에 먼저 write
 -> row count / partition 검증
--> 검증이 끝난 partition만 최종 경로로 이동
--> Hive sync
+-> 검증된 결과를 _versions/{run_id} 경로로 이동
+-> Hive partition location을 _versions/{run_id}/dt=... 로 전환
 -> SUCCESS manifest
 ```
 
-임시 저장 경로는 다음 형태를 사용한다.
+저장 경로는 다음 형태를 사용한다.
 
 ```text
 {output}/_staging/{run_id}
+{output}/_versions/{run_id}
 ```
 
-`_staging`은 `_`로 시작하므로 Hive partition repair 대상에서 제외된다.
-실패한 실행의 임시 저장 경로가 남더라도 `SUCCESS` manifest가 없으면
-완료된 배치로 보지 않는다.
+`_staging`은 write/검증 전용 임시 경로이고, `_versions`는 검증이 끝난 배치 결과를 보관하는 경로다.
+Hive external table의 각 `dt` partition은 `{output}/dt=...`를 직접 읽는 것이 아니라
+`_versions/{run_id}/dt=...` location을 바라본다.
+
+이 구조에서는 기존 partition 데이터를 먼저 삭제하지 않는다. 따라서 publish 중 실패하더라도
+기존 데이터 파일이 사라져 partition이 비는 문제를 줄일 수 있다. 다만 여러 `dt` partition의
+location을 전환하는 중 장애가 나면 일부 partition만 새 version을 바라볼 수 있으므로,
+`SUCCESS` manifest가 없는 실행은 완료된 배치로 보지 않고 재실행 대상으로 판단한다.

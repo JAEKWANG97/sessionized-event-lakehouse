@@ -31,17 +31,13 @@ object SessionizedEventLakehouseApp {
       val rawEvents = spark.read
         .option("header", "true")
         .schema(EventSchema.rawCsvSchema)
-        .csv(config.input)
+        .csv(config.inputPaths: _*)
 
       val sessionizedEvents = Sessionization
         .transform(rawEvents, config.sessionGapMinutes, config.timezone, config.runId)
         .filter(col("dt") >= config.startDate && col("dt") < config.endDate)
 
       val writeResult = LakeWriter.writePartitioned(sessionizedEvents, config)
-
-      if (config.enableHiveSync) {
-        LakeWriter.syncHiveTable(spark, config)
-      }
 
       RunManifestWriter.writeSuccess(spark, config, writeResult.rowCount, writeResult.partitions, startedAt, Instant.now())
     } catch {

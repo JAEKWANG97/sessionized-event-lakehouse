@@ -8,11 +8,13 @@
 
 ```text
 sample/sample_events.csv
+sample/lookback_previous_period.csv
+sample/lookback_target_period.csv
 ```
 
 ## 샘플이 검증하는 것
 
-이 샘플은 단순히 row 수를 줄인 데이터가 아니다. 과제의 핵심 조건을 일부러 담은 테스트 데이터다.
+이 샘플은 단순히 row 수를 줄인 데이터가 아니다. 핵심 처리 조건을 일부러 담은 테스트 데이터다.
 
 검증하려는 케이스는 다음과 같다.
 
@@ -23,6 +25,7 @@ sample/sample_events.csv
 4. 서로 다른 user_id는 독립적으로 세션화
 5. UTC timestamp가 KST 기준 다음 날짜로 넘어가는 경우
 6. brand가 비어 있는 nullable field 케이스
+7. publish 대상 기간 이전 이벤트가 현재 기간 세션의 시작점이 되는 lookback 케이스
 ```
 
 ## 세션 경계 조건

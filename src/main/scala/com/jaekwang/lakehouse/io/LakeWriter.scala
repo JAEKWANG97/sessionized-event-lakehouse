@@ -15,12 +15,26 @@ object LakeWriter {
     val spark = df.sparkSession
     val outputPath = new Path(config.output)
     val stagingPath = new Path(new Path(config.output, "_staging"), safeFileName(config.runId))
+    val versionPath = new Path(new Path(config.output, "_versions"), safeFileName(config.runId))
     val fs = outputPath.getFileSystem(spark.sparkContext.hadoopConfiguration)
+
+    if (config.enableHiveSync && fs.exists(versionPath)) {
+      throw new IllegalStateException(
+        s"Version path already exists for run_id=${config.runId}: $versionPath. Use a new run_id or clean up the incomplete run."
+      )
+    }
 
     deleteIfExists(fs, stagingPath)
     fs.mkdirs(outputPath)
 
-    df.write
+    val outputDf =
+      if (config.repartitionByDt) {
+        df.repartition(col("dt"))
+      } else {
+        df
+      }
+
+    outputDf.write
       .mode("overwrite")
       .option("compression", "snappy")
       .partitionBy("dt")
@@ -33,13 +47,17 @@ object LakeWriter {
       throw new IllegalStateException("No dt partitions were written to the staging path.")
     }
 
-    publishPartitions(fs, stagingPath, outputPath, result.partitions)
-    deleteIfExists(fs, stagingPath)
+    if (config.enableHiveSync) {
+      publishVersionedPartitions(spark, fs, stagingPath, versionPath, config, result.partitions)
+    } else {
+      publishFileSystemPartitions(fs, stagingPath, outputPath, result.partitions)
+      deleteIfExists(fs, stagingPath)
+    }
 
     result
   }
 
-  def syncHiveTable(spark: SparkSession, config: AppConfig): Unit = {
+  private def ensureHiveTable(spark: SparkSession, config: AppConfig): Unit = {
     val tableLocation = toLocationUri(config.output)
 
     spark.sql(s"CREATE DATABASE IF NOT EXISTS ${config.database}")
@@ -69,7 +87,6 @@ object LakeWriter {
          |LOCATION '$tableLocation'
          |""".stripMargin
     )
-    spark.sql(s"MSCK REPAIR TABLE ${config.database}.${config.table}")
   }
 
   private def toLocationUri(path: String): String = {
@@ -92,7 +109,38 @@ object LakeWriter {
     WriteResult(row.getLong(0), row.getSeq[String](1))
   }
 
-  private def publishPartitions(
+  private def publishVersionedPartitions(
+      spark: SparkSession,
+      fs: FileSystem,
+      stagingPath: Path,
+      versionPath: Path,
+      config: AppConfig,
+      partitions: Seq[String]
+  ): Unit = {
+    ensureHiveTable(spark, config)
+
+    if (!fs.rename(stagingPath, versionPath)) {
+      throw new IllegalStateException(s"Failed to promote staging path $stagingPath to version path $versionPath")
+    }
+
+    partitions.foreach { dt =>
+      val partitionName = s"dt=$dt"
+      val versionedPartition = new Path(versionPath, partitionName)
+
+      if (!fs.exists(versionedPartition)) {
+        throw new IllegalStateException(s"Missing versioned partition: $versionedPartition")
+      }
+
+      val partitionLocation = toLocationUri(versionedPartition.toString)
+      val tableName = s"${config.database}.${config.table}"
+      val partitionSpec = s"dt='${escapeSqlString(dt)}'"
+
+      spark.sql(s"ALTER TABLE $tableName ADD IF NOT EXISTS PARTITION ($partitionSpec) LOCATION '$partitionLocation'")
+      spark.sql(s"ALTER TABLE $tableName PARTITION ($partitionSpec) SET LOCATION '$partitionLocation'")
+    }
+  }
+
+  private def publishFileSystemPartitions(
       fs: FileSystem,
       stagingPath: Path,
       outputPath: Path,
@@ -123,4 +171,7 @@ object LakeWriter {
 
   private def safeFileName(value: String): String =
     value.replaceAll("[^A-Za-z0-9._=-]", "_")
+
+  private def escapeSqlString(value: String): String =
+    value.replace("'", "''")
 }

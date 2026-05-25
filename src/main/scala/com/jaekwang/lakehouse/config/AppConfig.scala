@@ -2,6 +2,7 @@ package com.jaekwang.lakehouse.config
 
 final case class AppConfig(
     input: String,
+    lookbackInput: Option[String],
     output: String,
     startDate: String,
     endDate: String,
@@ -10,8 +11,15 @@ final case class AppConfig(
     table: String,
     sessionGapMinutes: Int = 5,
     timezone: String = "Asia/Seoul",
-    enableHiveSync: Boolean = true
-)
+    enableHiveSync: Boolean = true,
+    repartitionByDt: Boolean = true
+) {
+  def inputPaths: Seq[String] =
+    (lookbackInput.toSeq ++ Seq(input))
+      .flatMap(_.split(","))
+      .map(_.trim)
+      .filter(_.nonEmpty)
+}
 
 object AppConfig {
   def parse(args: Array[String]): AppConfig = {
@@ -25,6 +33,7 @@ object AppConfig {
 
     AppConfig(
       input = required("input"),
+      lookbackInput = values.get("lookback-input"),
       output = required("output"),
       startDate = required("start-date"),
       endDate = required("end-date"),
@@ -33,7 +42,8 @@ object AppConfig {
       table = values.getOrElse("table", "sessionized_events"),
       sessionGapMinutes = values.get("session-gap-minutes").map(_.toInt).getOrElse(5),
       timezone = values.getOrElse("timezone", "Asia/Seoul"),
-      enableHiveSync = values.get("enable-hive-sync").forall(_.toBoolean)
+      enableHiveSync = values.get("enable-hive-sync").forall(_.toBoolean),
+      repartitionByDt = values.get("repartition-by-dt").forall(_.toBoolean)
     )
   }
 }

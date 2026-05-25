@@ -18,7 +18,7 @@
 | 동일 `user_id` 내에서 `event_time` 간격이 5분 이상이면 새 세션 ID 생성 | `Sessionization.scala` window function |
 | 재처리 후 Parquet/Snappy 처리 | `LakeWriter.scala`, `docs/period-extension-verification.md` |
 | External Table 방식 설계 | `sql/create_external_table.sql`, `docs/table-schema.md` |
-| 추가 기간 처리에 대응 가능하도록 구현 | 실행 인자 `--input`, `--start-date`, `--end-date`, `docs/application-arguments.md` |
+| 추가 기간 처리에 대응 가능하도록 구현 | 실행 인자 `--input`, `--lookback-input`, `--start-date`, `--end-date`, `docs/application-arguments.md` |
 | 배치 장애 시 복구를 위한 장치 구현 | `RunManifestWriter.scala`, staging 후 publish 구조, `docs/run-manifest.md` |
 | Hive external table을 이용한 WAU 계산 | `sql/wau_by_user.sql`, `sql/wau_by_session.sql`, README WAU 결과 |
 | `user_id` 기준 WAU 계산 | README `WAU 계산 쿼리` |
