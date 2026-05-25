@@ -50,19 +50,19 @@ spark-submit \
 | 인자 | 필수 여부 | 예시 | 설명 |
 |---|---:|---|---|
 | `--input` | 필수 | `sample/sample_events.csv` | 입력 CSV 경로 또는 glob 패턴 |
-| `--lookback-input` | 선택 | `sample/lookback_previous_period.csv` | 세션 경계 판단을 위해 함께 읽을 이전 기간 CSV 경로 또는 glob 패턴 |
-| `--output` | 필수 | `data/lake/sessionized_events` | Parquet/Snappy 결과와 manifest가 저장될 lake root 경로 |
-| `--start-date` | 필수 | `2019-10-01` | 처리할 KST partition 시작일. 포함한다. |
-| `--end-date` | 필수 | `2019-12-01` | 처리할 KST partition 종료일. 포함하지 않는다. |
+| `--lookback-input` | 선택 | `sample/lookback_previous_period.csv` | 세션 경계 판단에 참고할 이전 기간 CSV 경로 또는 glob 패턴 |
+| `--output` | 필수 | `data/lake/sessionized_events` | Parquet/Snappy 결과와 실행 요약 파일인 manifest가 저장될 lake root 경로. 여기서는 분석용 파일을 모아두는 최상위 경로를 뜻한다. |
+| `--start-date` | 필수 | `2019-10-01` | 처리할 KST `dt` 날짜 구간의 시작일. 포함한다. |
+| `--end-date` | 필수 | `2019-12-01` | 처리할 KST `dt` 날짜 구간의 종료일. 포함하지 않는다. |
 | `--run-id` | 필수 | `sample-001` | 배치 실행 ID |
 | `--database` | 선택 | `default` | Hive database 이름. 기본값은 `default` |
 | `--table` | 선택 | `sessionized_events` | Hive external table 이름. 기본값은 `sessionized_events` |
-| `--enable-hive-sync` | 선택 | `true` | Hive external table과 partition location을 갱신할지 여부. 기본값은 `true` |
-| `--repartition-by-dt` | 선택 | `true` | write 전에 `dt` 기준 repartition을 수행할지 여부. 기본값은 `true` |
+| `--enable-hive-sync` | 선택 | `true` | Hive external table과 날짜별 partition을 Hive가 읽는 위치를 갱신할지 여부. 기본값은 `true` |
+| `--repartition-by-dt` | 선택 | `true` | 저장 전에 `dt` 날짜 기준으로 파일 수를 줄이는 정리를 수행할지 여부. 기본값은 `true` |
 
-## 날짜 범위는 KST partition 기준이다
+## 날짜 범위는 KST `dt` 기준이다
 
-이 프로젝트에서 날짜 필터는 원본 UTC 시간이 아니라 KST 기준 partition인 `dt`에 적용한다.
+이 프로젝트에서 날짜 필터는 원본 UTC 시간이 아니라 KST 기준 날짜 구간인 `dt`에 적용한다.
 
 ```text
 start-date <= dt < end-date
@@ -89,7 +89,7 @@ KST 기준으로 `2019-10-01`부터 `2019-11-30`까지 처리한다는 뜻이다
 
 ## run_id를 두는 이유
 
-배치 작업은 중간에 실패할 수 있다. 예를 들어 Spark 작업이 Parquet 파일을 쓰는 도중 실패하거나, Hive partition을 갱신하기 전에 종료될 수 있다.
+배치 작업은 중간에 실패할 수 있다. 예를 들어 Spark 작업이 Parquet 파일을 쓰는 도중 실패하거나, Hive가 읽는 날짜별 위치를 갱신하기 전에 종료될 수 있다.
 
 그래서 모든 실행에 `run_id`를 부여한다.
 
@@ -98,7 +98,7 @@ KST 기준으로 `2019-10-01`부터 `2019-11-30`까지 처리한다는 뜻이다
 ```text
 - 결과 테이블의 run_id 컬럼
 - 임시 저장 경로
-- run manifest
+- 실행 요약 파일인 run manifest
 - 장애 분석과 재처리 추적
 ```
 
@@ -135,15 +135,16 @@ run_id = full-201910-201911-001
 
 ```text
 input과 lookback-input을 함께 읽고 세션을 계산한다.
-마지막 write 직전에 start-date <= dt < end-date 범위만 남긴다.
-같은 기간을 재처리하면 해당 dt partition을 새 version으로 전환한다.
+마지막 저장 직전에 start-date <= dt < end-date 범위만 남긴다.
+같은 기간을 재처리하면 해당 `dt` 날짜 구간을 새 보관 경로로 전환한다.
 ```
 
-`--lookback-input`은 완전한 stateful incremental 처리가 아니라 명시적인
-context input이다. 정확성을 위해서는 경계 세션이 포함될 만큼 충분한 이전
-데이터를 `--lookback-input`으로 제공해야 한다.
+`--lookback-input`은 이전 처리 상태를 저장해 이어 붙이는 완전한 incremental
+처리가 아니라, 이전 기간 데이터를 명시적으로 함께 읽는 방식이다. 정확성을
+위해서는 경계 세션이 포함될 만큼 충분한 이전 데이터를 `--lookback-input`으로
+제공해야 한다.
 
-예를 들어 11월만 publish하되 10월 말 이벤트와 이어지는 세션을 판단하려면
+예를 들어 11월만 최종 저장하되 10월 말 이벤트와 이어지는 세션을 판단하려면
 다음처럼 실행할 수 있다.
 
 ```bash
@@ -158,7 +159,7 @@ spark-submit \
   --run-id full-201911-001
 ```
 
-이때 11월 partition에 저장되는 row라도 `session_start_at_utc`와
+이때 11월 날짜 구간에 저장되는 row라도 `session_start_at_utc`와
 `session_start_at_kst`가 10월 말 시각을 가리킬 수 있다. 이는 경계 세션이
 이전 기간에서 시작되었음을 나타내기 위한 의도된 동작이다.
 
@@ -170,7 +171,7 @@ spark-submit \
    - user_id별 마지막 이벤트 시간과 마지막 세션 번호를 별도 테이블에 저장한다.
 
 2. table format 기반 commit
-   - 여러 partition의 publish를 하나의 commit처럼 관리한다.
+   - 여러 날짜 구간 반영을 하나의 작업처럼 관리한다.
 ```
 
 하지만 이 방식은 구현 복잡도가 올라가므로, 현재 구현에서는 명시적인 lookback
@@ -193,8 +194,8 @@ spark-submit \
   --repartition-by-dt true
 ```
 
-Hive sync를 끈 샘플 실행에서는 다음 파일시스템 partition이 생성된다.
-Hive sync를 사용하는 실행에서는 각 `dt` partition location이
+Hive sync를 끈 샘플 실행에서는 다음 파일시스템 날짜 구간이 생성된다.
+Hive sync를 사용하는 실행에서는 각 `dt` 날짜 구간이 실제로 읽을 위치가
 `_versions/{run_id}/dt=...` 경로를 바라본다.
 
 ```text
@@ -209,7 +210,7 @@ data/lake/sessionized_events/dt=2019-10-02/
 | 요구사항 | 설계 반영 |
 |---|---|
 | 추가 기간 처리 대응 | `--input`, `--lookback-input`, `--start-date`, `--end-date` |
-| KST 기준 daily partition | 날짜 필터를 KST `dt` 기준으로 적용 |
-| 재처리 가능 | 같은 기간 재실행 시 partition location을 새 version으로 전환 |
-| 배치 장애 복구 | `run_id`, run manifest, 임시 저장 경로, versioned partition location 전환 |
+| KST 기준 daily partition | 날짜 필터를 KST `dt` 날짜 구간 기준으로 적용 |
+| 재처리 가능 | 같은 기간 재실행 시 Hive가 읽는 날짜별 위치를 새 보관 경로로 전환 |
+| 배치 장애 복구 | `run_id`, run manifest, 임시 저장 경로, run_id별 보관 경로 전환 |
 | Hive external table | `--output`, `--database`, `--table`로 위치와 테이블명 분리 |

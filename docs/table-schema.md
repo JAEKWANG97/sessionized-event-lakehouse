@@ -1,6 +1,8 @@
 # Hive 테이블 스키마 설계
 
-이 프로젝트의 핵심 결과물은 Hive external table이다. Spark가 CSV 로그를 읽고,
+이 프로젝트의 핵심 결과물은 Hive external table이다. 여기서는 Hive가 데이터를 직접
+소유하는 것이 아니라, Spark가 만든 파일 위치를 테이블처럼 읽을 수 있게 등록한다.
+Spark가 CSV 로그를 읽고,
 KST 기준 날짜와 새 세션 ID를 붙인 뒤, Parquet/Snappy 파일로 저장한다.
 Hive table은 이 파일 위치를 바라보면서 SQL로 조회할 수 있게 해준다.
 
@@ -55,9 +57,9 @@ user_session    -> source_user_session
 | `session_event_seq` | bigint | 생성된 세션 안에서 이벤트 순번 |
 | `ingested_at` | timestamp | 배치 처리 시각 |
 | `run_id` | string | 배치 실행 ID |
-| `dt` | string | KST 기준 날짜 partition |
+| `dt` | string | KST 기준 날짜별 저장 구간을 나타내는 partition 컬럼 |
 
-`dt`는 일반 컬럼이 아니라 partition 컬럼으로 둔다.
+`dt`는 일반 컬럼이 아니라, 파일을 날짜별 폴더로 나눌 때 쓰는 partition 컬럼으로 둔다.
 
 ## 필드 설계 기준
 
@@ -66,10 +68,10 @@ user_session    -> source_user_session
 
 | 구분 | 컬럼 | 왜 필요한가 |
 |---|---|---|
-| 원본 이벤트 속성 | `event_type`, `product_id`, `category_id`, `category_code`, `brand`, `price`, `user_id` | 원본 ecommerce activity 로그의 분석 가능한 속성이다. WAU는 `user_id`를 기준으로 계산하므로 `user_id`는 핵심 기준 컬럼이다. |
-| 시간 기준 | `event_time_utc`, `event_time_kst`, `dt` | 원본 시간과 KST 변환 결과를 함께 남긴다. `dt`는 KST daily partition이며, 원본 UTC 날짜와 혼동하지 않기 위해 별도 컬럼으로 둔다. |
+| 원본 이벤트 속성 | `event_type`, `product_id`, `category_id`, `category_code`, `brand`, `price`, `user_id` | 원본 전자상거래 활동 로그의 분석 가능한 속성이다. WAU는 `user_id`를 기준으로 계산하므로 `user_id`는 핵심 기준 컬럼이다. |
+| 시간 기준 | `event_time_utc`, `event_time_kst`, `dt` | 원본 시간과 KST 변환 결과를 함께 남긴다. `dt`는 KST 기준 날짜별 저장 구간이며, 원본 UTC 날짜와 혼동하지 않기 위해 별도 컬럼으로 둔다. |
 | 원본 세션 추적 | `source_user_session` | 원본 `user_session`은 어떤 기준으로 생성됐는지 알 수 없으므로 새 세션 기준으로 쓰지 않는다. 다만 원본과 비교하거나 추적할 수 있도록 이름을 바꿔 보존한다. |
-| 생성 세션 | `generated_session_id`, `session_seq`, `session_start_at_utc`, `session_start_at_kst`, `session_event_seq` | 요구사항의 5분 gap 기준 세션 결과다. `generated_session_id`는 downstream 조회용 ID이고, 나머지 컬럼은 사람이 세션 경계를 검증하기 위한 근거다. |
+| 생성 세션 | `generated_session_id`, `session_seq`, `session_start_at_utc`, `session_start_at_kst`, `session_event_seq` | 요구사항의 5분 간격 기준 세션 결과다. `generated_session_id`는 이 테이블을 조회하는 다음 작업에서 세션을 식별하기 위한 ID이고, 나머지 컬럼은 사람이 세션 경계를 검증하기 위한 근거다. |
 | 배치 추적 | `ingested_at`, `run_id` | 어떤 실행에서 만들어진 데이터인지 확인하기 위한 운영 컬럼이다. 재처리와 장애 확인 시 manifest와 함께 비교할 수 있다. |
 
 즉 이 테이블은 "최종 분석용 이벤트 로그"이면서 동시에, 세션 생성 결과를
@@ -80,7 +82,7 @@ user_session    -> source_user_session
 세션 ID는 사람이 읽기 쉬운 `user_id_sessionSeq` 형태가 아니라 SHA-256 해시값으로 만든다.
 초기에는 `session_seq`를 ID 재료로 넣는 방식도 검토했지만, lookback input을
 사용하면 입력 범위에 따라 같은 실제 세션의 `session_seq`가 달라질 수 있다.
-그래서 downstream 식별자인 `generated_session_id`는 처리 범위 변화에 덜
+그래서 다음 분석이나 쿼리에서 사용하는 식별자인 `generated_session_id`는 처리 범위 변화에 덜
 민감한 값으로 만들었다.
 
 개념식은 다음과 같다.
@@ -93,7 +95,7 @@ generated_session_id = sha2(concat_ws('|', user_id, session_start_at_utc), 256)
 
 ```text
 1. 같은 데이터를 재처리해도 같은 session_id가 나온다.
-2. downstream query에서 안정적으로 사용할 수 있다.
+2. 후속 쿼리에서 안정적으로 사용할 수 있다.
 3. user_id와 session_seq를 그대로 붙인 값을 대표 ID로 노출하지 않아도 된다.
 4. lookback input을 도입해도 session_seq 변화에 ID가 흔들리지 않는다.
 5. 디버깅은 session_seq와 session_start_at_utc 컬럼으로 할 수 있다.
@@ -103,8 +105,8 @@ generated_session_id = sha2(concat_ws('|', user_id, session_start_at_utc), 256)
 넓히면 같은 실제 세션의 앞쪽 history가 추가되어 `session_seq`가 달라질 수
 있으므로, `generated_session_id`의 재료로 사용하지 않는다.
 
-`--lookback-input`을 사용하면 publish 대상 `dt`의 row라도
-`session_start_at_utc`와 `session_start_at_kst`가 publish 범위 이전 시각을
+`--lookback-input`을 사용하면 최종 저장 대상 `dt`의 row라도
+`session_start_at_utc`와 `session_start_at_kst`가 최종 저장 범위 이전 시각을
 가리킬 수 있다. 이는 해당 세션이 이전 기간에서 시작되었음을 나타내는 의도된
 동작이다.
 
@@ -160,14 +162,14 @@ LOCATION '${output_path}';
 dt=2019-10-01
 ```
 
-Hive external table에서는 partition 컬럼을 `string`으로 두는 방식이 가장 무난하다. 실제 파일 경로도 다음처럼 문자열 기반 partition directory로 만들어진다.
+Hive external table에서는 날짜별 폴더를 구분하는 partition 컬럼을 `string`으로 두는 방식이 가장 무난하다. 실제 파일 경로도 다음처럼 문자열 기반 날짜별 디렉터리로 만들어진다.
 
 ```text
 data/lake/sessionized_events/dt=2019-10-01/
 data/lake/sessionized_events/dt=2019-10-02/
 ```
 
-`date` 타입도 가능하지만, Spark/Hive/Trino 호환성과 partition path 관점에서는 `string`이 단순하고 안정적이다.
+`date` 타입도 가능하지만, Spark/Hive/Trino 호환성과 저장 경로 관점에서는 `string`이 단순하고 안정적이다.
 
 ## 이 테이블로 계산할 지표
 

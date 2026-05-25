@@ -4,7 +4,7 @@
 
 배치 장애 시 복구 판단을 돕기 위해 각 실행의 상태와 처리 결과를 manifest JSON 파일로 남긴다.
 처음에는 Spark 로그만 확인해도 충분해 보일 수 있지만, 로그만으로는 어떤 기간이
-성공적으로 publish됐는지, 같은 기간을 다시 실행해도 되는지 판단하기 어렵다.
+성공적으로 최종 반영됐는지, 같은 기간을 다시 실행해도 되는지 판단하기 어렵다.
 
 Manifest는 일반 실행 로그가 아니라, 배치 실행 결과를 구조화해서 남기는 실행 요약 파일이다.
 
@@ -15,7 +15,7 @@ manifest = 성공 여부, 처리 범위, 재실행 범위 판단용
 
 ## 저장 위치
 
-Manifest는 output root 아래 `_manifests` 디렉터리에 저장한다.
+Manifest는 결과 저장 루트 경로 아래 `_manifests` 디렉터리에 저장한다.
 
 ```text
 {output}/_manifests/{run_id}.json
@@ -43,18 +43,18 @@ RUNNING -> FAILED
 ```text
 1. SparkSession 생성
 2. RUNNING manifest 작성
-3. CSV read / KST partition / sessionization
-4. 최종 경로가 아닌 임시 저장 경로에 Parquet/Snappy write
-5. 임시 저장 결과를 다시 읽어 row_count, partition 목록 검증
-6. 검증된 결과를 `_versions/{run_id}` 경로로 이동
-7. Hive partition location을 `_versions/{run_id}/dt=...` 경로로 전환
+3. CSV 읽기 / KST 기준 날짜 구간 생성 / 세션 계산
+4. 최종 경로가 아닌 임시 저장 경로에 Parquet/Snappy 파일 저장
+5. 임시 저장 결과를 다시 읽어 row_count와 날짜 구간 목록 검증
+6. 검증된 결과를 run_id별 보관 경로인 `_versions/{run_id}`로 이동
+7. Hive가 읽는 날짜별 위치를 `_versions/{run_id}/dt=...` 경로로 전환
 8. SUCCESS manifest 작성
 ```
 
-위 순서의 `_versions/{run_id}` publish와 Hive partition location 전환은
+위 순서의 `_versions/{run_id}` 최종 반영과 Hive가 읽는 날짜별 위치 전환은
 Hive sync를 사용하는 실행 경로에 적용된다. Hive sync를 끈 로컬 샘플 실행은
-Hive metadata를 변경하지 않고 파일시스템의 `dt` partition을 교체하는 방식으로
-동작한다.
+Hive에 등록된 테이블 정보를 변경하지 않고 파일시스템의 `dt` 날짜 구간을
+교체하는 방식으로 동작한다.
 
 catch 가능한 예외가 발생하면 `FAILED` manifest로 갱신한다.
 
@@ -70,17 +70,17 @@ catch 가능한 예외가 발생하면 `FAILED` manifest로 갱신한다.
 | `status` | `RUNNING`, `SUCCESS`, `FAILED` |
 | `input` | 입력 경로 |
 | `lookback_input` | 세션 경계 판단을 위해 함께 읽은 이전 기간 입력 경로. 없으면 `null` |
-| `input_paths` | 실제 Spark CSV reader에 전달한 전체 입력 경로 목록 |
-| `output` | 출력 경로 |
-| `database` | Hive database |
-| `table` | Hive table |
+| `input_paths` | Spark가 실제로 함께 읽은 전체 CSV 경로 목록 |
+| `output` | 결과 파일과 실행 요약 파일을 저장한 경로 |
+| `database` | Hive에서 사용할 database |
+| `table` | Hive에서 사용할 table |
 | `start_date` | 처리 시작일, inclusive |
 | `end_date` | 처리 종료일, exclusive |
-| `timezone` | partition 기준 timezone |
-| `session_gap_minutes` | 세션 분리 기준 |
-| `repartition_by_dt` | write 전에 `dt` 기준 repartition을 수행했는지 여부 |
+| `timezone` | 날짜 구간을 나누는 기준 timezone |
+| `session_gap_minutes` | 세션을 나누는 기준 시간 |
+| `repartition_by_dt` | 저장 전에 `dt` 날짜별로 파일 수를 줄이는 정리를 수행했는지 여부 |
 | `row_count` | 성공 시 처리 결과 row 수 |
-| `partitions` | 성공 시 생성 또는 교체된 `dt` partition 목록 |
+| `partitions` | 성공 시 생성 또는 교체된 `dt` 날짜 구간 목록 |
 | `started_at` | 실행 시작 시각 |
 | `completed_at` | 성공 또는 실패 기록 시각 |
 | `error_class` | 실패 시 예외 class |
@@ -195,22 +195,22 @@ manifest 없음
 ```
 
 실패 또는 incomplete run은 같은 `start-date`, `end-date`, `input`, `output` 조건으로 다시 실행한다.
-재실행할 때는 새 `run_id`를 사용하는 것이 안전하다. 동일 `dt` partition은 새 versioned path를 바라보게 되므로 중복 append를 피할 수 있다.
+재실행할 때는 새 `run_id`를 사용하는 것이 안전하다. 동일 `dt` 날짜 구간은 새 run_id별 보관 경로를 바라보게 되므로 중복 append를 피할 수 있다.
 
-## Versioned partition publish
+## run_id별 보관 경로로 최종 반영
 
-초기 publish 방식은 staging 결과를 final `dt` partition으로 옮기는 구조로
-생각할 수 있다. 하지만 final partition을 먼저 삭제한 뒤 rename하는 방식은
-publish 중 장애가 나면 기존 partition이 비는 위험이 있다.
+초기 최종 반영 방식은 임시 저장 결과를 최종 `dt` 날짜 구간으로 옮기는 구조로
+생각할 수 있다. 하지만 기존 날짜 구간을 먼저 삭제한 뒤 새 결과로 이름을 바꾸는 방식은
+최종 반영 중 장애가 나면 기존 날짜 데이터가 비어 보이는 위험이 있다.
 
 현재 구현은 이 위험을 줄이기 위해 최종 경로가 아닌 임시 저장 경로에 먼저
 결과를 만든다.
 
 ```text
-최종 경로가 아닌 임시 저장 경로에 먼저 write
--> row count / partition 검증
--> 검증된 결과를 _versions/{run_id} 경로로 이동
--> Hive partition location을 _versions/{run_id}/dt=... 로 전환
+최종 경로가 아닌 임시 저장 경로에 먼저 파일 저장
+-> row 수 / 날짜 구간 검증
+-> 검증된 결과를 _versions/{run_id} 보관 경로로 이동
+-> Hive가 읽는 날짜별 위치를 _versions/{run_id}/dt=... 로 전환
 -> SUCCESS manifest
 ```
 
@@ -221,13 +221,13 @@ publish 중 장애가 나면 기존 partition이 비는 위험이 있다.
 {output}/_versions/{run_id}
 ```
 
-`_staging`은 write/검증 전용 임시 경로이고, `_versions`는 검증이 끝난 배치 결과를 보관하는 경로다.
-Hive external table의 각 `dt` partition은 `{output}/dt=...`를 직접 읽는 것이 아니라
-`_versions/{run_id}/dt=...` location을 바라본다.
-`MSCK REPAIR TABLE`은 table root 아래의 `dt=...` partition을 자동 발견하는 방식에
-가깝지만, 이 구조에서는 재처리 안정성을 위해 partition별 `LOCATION`을 명시적으로 관리한다.
+`_staging`은 저장과 검증에만 쓰는 임시 경로이고, `_versions`는 검증이 끝난 배치 결과를 보관하는 경로다.
+Hive external table의 각 `dt` 날짜 구간은 `{output}/dt=...`를 직접 읽는 것이 아니라
+`_versions/{run_id}/dt=...` 위치를 바라본다.
+`MSCK REPAIR TABLE`은 table root, 즉 테이블의 기본 저장 경로 아래의 `dt=...` 날짜 구간을 자동 발견하는 방식에
+가깝지만, 이 구조에서는 재처리 안정성을 위해 날짜 구간별 `LOCATION`을 명시적으로 관리한다.
 
-이 구조에서는 기존 partition 데이터를 먼저 삭제하지 않는다. 따라서 publish 중 실패하더라도
-기존 데이터 파일이 사라져 partition이 비는 문제를 줄일 수 있다. 다만 여러 `dt` partition의
-location을 전환하는 중 장애가 나면 일부 partition만 새 version을 바라볼 수 있으므로,
+이 구조에서는 기존 날짜 구간 데이터를 먼저 삭제하지 않는다. 따라서 최종 반영 중 실패하더라도
+기존 데이터 파일이 사라져 특정 날짜 구간이 비는 문제를 줄일 수 있다. 다만 여러 `dt` 날짜 구간의
+위치를 전환하는 중 장애가 나면 일부 날짜만 새 보관 경로를 바라볼 수 있으므로,
 `SUCCESS` manifest가 없는 실행은 완료된 배치로 보지 않고 재실행 대상으로 판단한다.
