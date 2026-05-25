@@ -25,7 +25,7 @@ user_session    -> source_user_session
 
 `event_time`은 실제로 `UTC`가 붙은 문자열이다. 이후 KST로 변환한 시간도 함께 저장할 것이므로, 원본 시간은 `event_time_utc`라고 부르는 게 안전하다.
 
-또한 `user_session`은 Kaggle 데이터에 원래 들어 있는 세션 ID다. 하지만 과제에서는 `event_time` 간격이 5분 이상이면 새 세션 ID를 생성하라고 했다. 따라서 원본 `user_session`과 우리가 생성한 `generated_session_id`를 구분해야 한다.
+또한 `user_session`은 Kaggle 데이터에 원래 들어 있는 세션 ID다. 하지만 요구사항에서는 `event_time` 간격이 5분 이상이면 새 세션 ID를 생성해야 한다. 따라서 원본 `user_session`과 우리가 생성한 `generated_session_id`를 구분해야 한다.
 
 ## 최종 스키마
 
@@ -51,6 +51,22 @@ user_session    -> source_user_session
 | `dt` | string | KST 기준 날짜 partition |
 
 `dt`는 일반 컬럼이 아니라 partition 컬럼으로 둔다.
+
+## 필드 설계 기준
+
+필드는 단순히 원본 CSV 컬럼을 모두 옮기는 방식이 아니라, 요구사항을
+설명하고 검증할 수 있도록 다음 기준으로 나누었다.
+
+| 구분 | 컬럼 | 왜 필요한가 |
+|---|---|---|
+| 원본 이벤트 속성 | `event_type`, `product_id`, `category_id`, `category_code`, `brand`, `price`, `user_id` | 원본 ecommerce activity 로그의 분석 가능한 속성이다. WAU는 `user_id`를 기준으로 계산하므로 `user_id`는 핵심 기준 컬럼이다. |
+| 시간 기준 | `event_time_utc`, `event_time_kst`, `dt` | 원본 시간과 KST 변환 결과를 함께 남긴다. `dt`는 KST daily partition이며, 원본 UTC 날짜와 혼동하지 않기 위해 별도 컬럼으로 둔다. |
+| 원본 세션 추적 | `source_user_session` | 원본 `user_session`은 어떤 기준으로 생성됐는지 알 수 없으므로 새 세션 기준으로 쓰지 않는다. 다만 원본과 비교하거나 추적할 수 있도록 이름을 바꿔 보존한다. |
+| 생성 세션 | `generated_session_id`, `session_seq`, `session_start_at_utc`, `session_start_at_kst`, `session_event_seq` | 요구사항의 5분 gap 기준 세션 결과다. `generated_session_id`는 downstream 조회용 ID이고, 나머지 컬럼은 사람이 세션 경계를 검증하기 위한 근거다. |
+| 배치 추적 | `ingested_at`, `run_id` | 어떤 실행에서 만들어진 데이터인지 확인하기 위한 운영 컬럼이다. 재처리와 장애 확인 시 manifest와 함께 비교할 수 있다. |
+
+즉 이 테이블은 "최종 분석용 이벤트 로그"이면서 동시에, 세션 생성 결과를
+면접이나 검증 단계에서 설명할 수 있도록 중간 근거를 일부 보존한 형태다.
 
 ## generated_session_id 생성 방식
 
@@ -147,4 +163,4 @@ COUNT(DISTINCT user_id)
 COUNT(DISTINCT generated_session_id)
 ```
 
-두 번째 지표는 엄밀히 말하면 “주간 활성 세션 수”에 가깝다. 다만 과제 요구사항에서 생성된 세션 ID 기준 WAU를 요구하므로, 쿼리와 결과를 함께 제공한다.
+두 번째 지표는 엄밀히 말하면 “주간 활성 세션 수”에 가깝다. 요구사항에 생성된 세션 ID 기준 WAU가 포함되어 있으므로, 쿼리와 결과를 함께 제공한다.
