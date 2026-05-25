@@ -1,0 +1,29 @@
+# Large/local datasets
+/data/raw/**
+!/data/raw/README.md
+/data/lake/
+/data/warehouse/
+/data/tmp/
+/data/staging/
+
+# Spark/Hive local outputs
+/spark-warehouse/
+/metastore_db/
+derby.log
+*.snappy.parquet
+
+# Build outputs
+/target/
+/project/target/
+/project/project/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Private assignment briefs
+DE 개발 사전 과제 (1년 이상)*

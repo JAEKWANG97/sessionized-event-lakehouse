@@ -1,0 +1,4 @@
+event_time,event_type,product_id,category_id,category_code,brand,price,user_id,user_session
+2019-10-02 15:10:00 UTC,view,4001,5001,electronics.audio,sony,80.00,400,source-session-e
+2019-10-02 15:14:00 UTC,cart,4001,5001,electronics.audio,sony,80.00,400,source-session-e
+2019-10-02 15:20:00 UTC,purchase,4001,5001,electronics.audio,sony,80.00,400,source-session-f

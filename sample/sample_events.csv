@@ -1,0 +1,10 @@
+event_time,event_type,product_id,category_id,category_code,brand,price,user_id,user_session
+2019-10-01 00:00:00 UTC,view,1001,2001,electronics.smartphone,apple,100.00,100,source-session-a
+2019-10-01 00:04:59 UTC,cart,1001,2001,electronics.smartphone,apple,100.00,100,source-session-a
+2019-10-01 00:09:59 UTC,view,1002,2001,electronics.smartphone,samsung,200.00,100,source-session-a
+2019-10-01 00:15:00 UTC,purchase,1002,2001,electronics.smartphone,samsung,200.00,100,source-session-b
+2019-10-01 00:01:00 UTC,view,2001,3001,computers.notebook,lenovo,500.00,200,source-session-c
+2019-10-01 00:03:00 UTC,view,2002,3001,computers.notebook,asus,700.00,200,source-session-c
+2019-10-01 15:30:00 UTC,view,3001,4001,appliances.kitchen.kettle,,30.00,300,source-session-d
+2019-10-01 15:34:59 UTC,cart,3001,4001,appliances.kitchen.kettle,,30.00,300,source-session-d
+2019-10-01 15:39:59 UTC,purchase,3001,4001,appliances.kitchen.kettle,,30.00,300,source-session-d
