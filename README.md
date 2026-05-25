@@ -382,31 +382,55 @@ Spark 실행 모델에 가깝게 표현할 수 있다고 판단했습니다.
 
 ## AI 도구 사용 내역
 
-AI 도구는 개발 보조 용도로 사용했습니다.
+사용한 도구:
 
-사용 범위:
+- OpenAI ChatGPT/Codex
 
-- 요구사항 체크리스트 정리
-- Spark 애플리케이션 구조 초안 작성 보조
-- README와 설계 문서 초안 작성 보조
-- 현재 구현 상태와 요구사항 비교
-- 제출 전 남은 작업 식별
+AI는 정답을 그대로 받는 용도보다, 요구사항을 쪼개고 제가 헷갈리는 개념을
+확인하며 구현 초안을 빠르게 검토하는 용도로 사용했습니다.
 
-직접 설계 및 검증한 부분:
+AI를 활용한 부분:
 
-- KST 기준 partition 설계
-- 5분 이상 gap 기준 세션화 규칙 해석
-- `generated_session_id` 구성 방식
-- Hive external table schema
-- 샘플 데이터의 경계 케이스 구성
-- 샘플 실행 결과 검증
+- 요구사항을 항목별로 나누고 구현 범위 체크리스트를 정리
+- Hive, external table, partition, Parquet/Snappy, manifest 개념 학습 보조
+- Spark 애플리케이션의 파일 구조와 일부 Scala 코드 초안 작성 보조
+- `user_id`별 window function을 이용한 세션화 로직 검토
+- staging 경로에 먼저 쓰고 검증 후 최종 partition으로 반영하는 흐름 검토
+- README와 `docs/` 문서 초안 작성 및 표현 정리 보조
+- 실행 명령, 검증 쿼리, 남은 작업 목록 점검
+
+직접 판단하고 검증한 부분:
+
+- `event_time`을 KST로 변환한 뒤 `dt` daily partition을 만드는 방향
+- 세션 경계 조건을 `이전 이벤트와 현재 이벤트의 차이 >= 300초`로 해석
+- 원본 `user_session`은 기준을 알 수 없으므로 사용하지 않고,
+  새 `generated_session_id`를 생성하기로 한 결정
+- `generated_session_id`를 재처리해도 동일하게 나오도록 deterministic hash로 구성
+- external table 필드 구성과 `source_user_session`, `session_seq`,
+  `session_start_at_*`, `run_id`를 남긴 이유
+- 추가 기간 적재와 동일 기간 재처리를 partition 단위 교체로 처리한 설계
+- 배치 실패를 자동 복구하기보다, incomplete run을 식별하고 같은 기간을
+  안전하게 재실행할 수 있게 만든 복구 방향
+- 샘플 데이터 경계 케이스와 전체 데이터 실행 결과 확인
+- WAU를 `user_id` 기준 값과 `generated_session_id` 기준 값으로 분리해 해석
 
 프롬프트 전략:
 
-- 요구사항을 항목별로 나누어 구현 상태와 비교했습니다.
-- AI가 생성한 코드는 바로 제출하지 않고, 설명 가능한 단위로 나누어
-  검토했습니다.
-- run manifest와 임시 저장 경로 기반 partition 반영 흐름은 구현하고
-  샘플 실행으로 검증했습니다.
+- 처음부터 코드 생성을 요청하기보다, 요구사항을 하나씩 나누어 제가 이해한
+  내용을 설명하고 AI에게 빠진 부분을 지적하게 했습니다.
+- 모르는 개념은 바로 구현으로 넘어가지 않고, Hive external table,
+  partition, Parquet/Snappy, manifest가 각각 어떤 문제를 해결하는지
+  질문했습니다.
+- AI가 제안한 구현은 그대로 확정하지 않고, 재처리, 중복 append, 중간 실패,
+  KST 날짜 경계처럼 실패할 수 있는 상황을 다시 질문했습니다.
+- README 문서는 AI가 초안을 만들되, 공개 저장소에 맞지 않는 표현과
+  제가 설명하기 어려운 문장은 제거하거나 다시 작성했습니다.
+
+검증 방식:
+
+- 작은 샘플 CSV로 KST partition, 5분 gap 세션화, 정확히 5분인 경계 조건을 확인
+- 추가 기간 적재와 동일 기간 재처리 시 partition이 추가 또는 교체되는지 확인
+- 전체 10월/11월 데이터를 실행해 row 수, partition 수, WAU 결과를 확인
+- `sbt compile`, `sbt package`, `spark-submit`, `spark-sql` 실행 결과를 기준으로 검증
 - `src/test` 기반 자동화 테스트는 별도로 작성하지 않았고, 샘플 데이터 실행과
-  전체 데이터 실행 결과를 기준으로 검증했습니다.
+  전체 데이터 실행 결과를 문서화했습니다.
